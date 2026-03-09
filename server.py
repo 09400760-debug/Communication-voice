@@ -9,7 +9,7 @@ from pathlib import Path
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+OPENAI_API_KEY = os.environ["OPENAI_API_KEY"].strip()
 
 TRANSCRIPTS_DIR = Path("transcripts")
 TRANSCRIPTS_DIR.mkdir(exist_ok=True)
