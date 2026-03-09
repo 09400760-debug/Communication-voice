@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Realtime Voice Communication Case</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 950px;
+      margin: 40px auto;
+      padding: 0 20px;
+    }
+    button, a.button-link {
+      display: inline-block;
+      padding: 10px 16px;
+      margin-right: 10px;
+      margin-bottom: 10px;
+      font-size: 16px;
+      text-decoration: none;
+      border: 1px solid #ccc;
+      background: #f5f5f5;
+      color: black;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    #status {
+      margin: 12px 0;
+      font-weight: bold;
+    }
+    #transcript {
+      border: 1px solid #ccc;
+      padding: 16px;
+      min-height: 320px;
+      background: #fafafa;
+      overflow-y: auto;
+    }
+    .line {
+      white-space: pre-wrap;
+      margin-bottom: 6px;
+    }
+    .small {
+      color: #666;
+      font-size: 14px;
+    }
+    #returnSection, #warningSection {
+      display: none;
+      margin-top: 20px;
+      padding: 16px;
+      border-radius: 8px;
+    }
+    #returnSection {
+      border: 1px solid #d9d9d9;
+      background: #f9f9f9;
+    }
+    #warningSection {
+      border: 1px solid #e0b4b4;
+      background: #fff6f6;
+    }
+  </style>
+</head>
+<body>
+  <h1>Realtime Voice Communication Case</h1>
+  <p class="small">This page runs the live caregiver communication exercise.</p>
+
+  <div id="status">Preparing session...</div>
+
+  <div style="margin-top:20px;">
+    <button id="startBtn" disabled>Start Voice Session</button>
+    <button id="stopBtn" disabled>Stop Session</button>
+  </div>
+
+  <div id="returnSection">
+    <p><strong>Session complete.</strong> Returning to the main app.</p>
+    <a id="returnBtn" class="button-link" href="#">Return to main app</a>
+  </div>
+
+  <div id="warningSection">
+    <p><strong>Session stopped before completion.</strong> You can return to the main app.</p>
+    <a id="manualReturnBtn" class="button-link" href="#">Return to main app</a>
+  </div>
+
+  <h3>Live transcript</h3>
+  <div id="transcript"></div>
+
+  <audio id="remoteAudio" autoplay></audio>
+
+  <script>
+    let pc = null;
+    let dc = null;
+    let localStream = null;
+    let sessionFinished = false;
+    let openingLineSeen = false;
+    let transcriptLines = [];
+    let transcriptSaved = false;
+    let stopInProgress = false;
+    let autoStarted = false;
+    let pendingAutoFeedback = "0";
+
+    const statusEl = document.getElementById("status");
+    const transcriptEl = document.getElementById("transcript");
+    const remoteAudioEl = document.getElementById("remoteAudio");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const returnSection = document.getElementById("returnSection");
+    const warningSection = document.getElementById("warningSection");
+    const returnBtn = document.getElementById("returnBtn");
+    const manualReturnBtn = document.getElementById("manualReturnBtn");
+
+    const ALLOWED_RETURN_ORIGINS = [
+      "https://communication-ij2amy3ps4hxxgaerltwxt.streamlit.app"
+    ];
+
+    const FINAL_FEEDBACK_QUESTION =
+      "Would you like to get your assessment and feedback now?";
+
+    const FINAL_STOP_YES =
+      "Thank you. Please click stop session now.";
+
+    const FINAL_STOP_NO =
+      "Okay. Please click stop session now.";
+
+    function getQueryParam(name, fallback = "") {
+      const params = new URLSearchParams(window.location.search);
+      return params.get(name) || fallback;
+    }
+
+    function normalizeText(text) {
+      return (text || "")
+        .toLowerCase()
+        .trim()
+        .replace(/[.,!?']/g, "")
+        .replace(/\s+/g, " ");
+    }
+
+    const SESSION_ID = getQueryParam("session_id", "");
+
+    function buildSafeReturnUrl(autoFeedback = "0") {
+      const rawReturnUrl = getQueryParam("return_url", "");
+      if (!rawReturnUrl) return "";
+
+      try {
+        const url = new URL(rawReturnUrl);
+        if (!ALLOWED_RETURN_ORIGINS.includes(url.origin)) {
+          console.warn("Blocked non-whitelisted return_url:", rawReturnUrl);
+          return "";
+        }
+        url.searchParams.set("import_voice", "1");
+        url.searchParams.set("auto_feedback", autoFeedback);
+        if (SESSION_ID) {
+          url.searchParams.set("session_id", SESSION_ID);
+        }
+        return url.toString();
+      } catch (err) {
+        console.warn("Invalid return_url:", rawReturnUrl, err);
+        return "";
+      }
+    }
+
+    function setReturnLinks(autoFeedback = "0") {
+      const url = buildSafeReturnUrl(autoFeedback);
+      if (url) {
+        returnBtn.href = url;
+        manualReturnBtn.href = url;
+        returnBtn.style.display = "inline-block";
+        manualReturnBtn.style.display = "inline-block";
+      } else {
+        returnBtn.style.display = "none";
+        manualReturnBtn.style.display = "none";
+      }
+    }
+
+    setReturnLinks("0");
+
+    function appendTranscriptLineToDOM(speaker, text) {
+      const line = document.createElement("div");
+      line.className = "line";
+      line.textContent = `${speaker}: ${text}`;
+      transcriptEl.appendChild(line);
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    }
+
+    function addTranscriptLine(speaker, text) {
+      if (!text) return;
+      transcriptLines.push({ speaker, text });
+      appendTranscriptLineToDOM(speaker, text);
+    }
+
+    async function saveTranscriptToServer() {
+      if (transcriptSaved) return true;
+
+      if (!SESSION_ID) {
+        statusEl.textContent = "Missing session ID. Transcript cannot be saved.";
+        return false;
+      }
+
+      try {
+        const payload = {
+          session_id: SESSION_ID,
+          transcript_lines: transcriptLines,
+          transcript_text: transcriptLines.map(x => `${x.speaker}: ${x.text}`).join("\n")
+        };
+
+        const response = await fetch("/save_transcript", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+          throw new Error(`Save failed with status ${response.status}`);
+        }
+
+        transcriptSaved = true;
+        return true;
+      } catch (err) {
+        console.error("Could not save transcript:", err);
+        statusEl.textContent = "Could not save transcript";
+        return false;
+      }
+    }
+
+    function resetUiForNewSession() {
+      sessionFinished = false;
+      openingLineSeen = false;
+      transcriptLines = [];
+      transcriptSaved = false;
+      stopInProgress = false;
+      pendingAutoFeedback = "0";
+
+      transcriptEl.innerHTML = "";
+      returnSection.style.display = "none";
+      warningSection.style.display = "none";
+      setReturnLinks("0");
+    }
+
+    function showReturnSection() {
+      returnSection.style.display = "block";
+      warningSection.style.display = "none";
+    }
+
+    function showIncompleteWarning() {
+      warningSection.style.display = "block";
+      returnSection.style.display = "none";
+    }
+
+    function isFeedbackQuestion(botText) {
+      return normalizeText(botText) === normalizeText(FINAL_FEEDBACK_QUESTION);
+    }
+
+    function isFinalStopYes(botText) {
+      return normalizeText(botText) === normalizeText(FINAL_STOP_YES);
+    }
+
+    function isFinalStopNo(botText) {
+      return normalizeText(botText) === normalizeText(FINAL_STOP_NO);
+    }
+
+    async function tearDownSession() {
+      if (dc) {
+        try { dc.close(); } catch {}
+        dc = null;
+      }
+
+      if (pc) {
+        try {
+          pc.ontrack = null;
+          pc.onconnectionstatechange = null;
+          pc.close();
+        } catch {}
+        pc = null;
+      }
+
+      if (localStream) {
+        localStream.getTracks().forEach(track => {
+          try { track.stop(); } catch {}
+        });
+        localStream = null;
+      }
+
+      remoteAudioEl.srcObject = null;
+      startBtn.disabled = true;
+      stopBtn.disabled = true;
+    }
+
+    async function completeAndReturn(autoFeedback = "0") {
+      sessionFinished = true;
+      pendingAutoFeedback = autoFeedback;
+      setReturnLinks(autoFeedback);
+
+      statusEl.textContent = autoFeedback === "1"
+        ? "Session complete. Saving transcript and returning for feedback..."
+        : "Session complete. Saving transcript and returning...";
+
+      await saveTranscriptToServer();
+      await tearDownSession();
+      showReturnSection();
+
+      const targetUrl = buildSafeReturnUrl(autoFeedback);
+      if (targetUrl) {
+        window.location.href = targetUrl;
+      }
+    }
+
+    async function startSession() {
+      if (autoStarted) return;
+      autoStarted = true;
+
+      try {
+        resetUiForNewSession();
+        statusEl.textContent = "Accessing microphone...";
+
+        const communication_type = getQueryParam("communication_type", "Explain diagnosis");
+        const setting = getQueryParam("setting", "Paediatric ward");
+        const caregiver_name = getQueryParam("caregiver_name", "Nomsa");
+        const child_name = getQueryParam("child_name", "the child");
+        const child_age = getQueryParam("child_age", "5 years");
+        const main_issue = getQueryParam("main_issue", "");
+        const caregiver_emotion = getQueryParam("caregiver_emotion", "worried");
+        const hidden_case_summary = getQueryParam("hidden_case_summary", "");
+        const opening_line = getQueryParam(
+          "opening_line",
+          `Doctor, I'm ${caregiver_name}. Please can you explain what is happening with ${child_name}?`
+        );
+        const normalizedOpeningLine = normalizeText(opening_line);
+
+        if (!SESSION_ID) {
+          statusEl.textContent = "Missing session ID. Please return to the main app and start a new case.";
+          return;
+        }
+
+        pc = new RTCPeerConnection();
+
+        pc.ontrack = (event) => {
+          remoteAudioEl.srcObject = event.streams[0];
+        };
+
+        pc.onconnectionstatechange = () => {
+          if (!sessionFinished && !stopInProgress && pc) {
+            statusEl.textContent = `Connection state: ${pc.connectionState}`;
+          }
+        };
+
+        dc = pc.createDataChannel("oai-events");
+
+        dc.onopen = () => {
+          if (!sessionFinished && !stopInProgress) {
+            statusEl.textContent = "Connected";
+          }
+        };
+
+        dc.onmessage = async (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            console.log("Realtime event:", msg);
+
+            if (sessionFinished || stopInProgress) return;
+
+            if (msg.type === "conversation.item.input_audio_transcription.completed") {
+              if (msg.transcript) {
+                addTranscriptLine("Student", msg.transcript);
+              }
+              return;
+            }
+
+            if (msg.type === "response.output_item.done") {
+              const item = msg.item;
+              if (!item || !item.content) return;
+
+              const transcriptPart = item.content.find(c => c.transcript);
+              if (!transcriptPart || !transcriptPart.transcript) return;
+
+              const botText = transcriptPart.transcript;
+              const normalizedBotText = normalizeText(botText);
+
+              if (normalizedBotText === normalizedOpeningLine) {
+                if (!openingLineSeen) {
+                  openingLineSeen = true;
+                  addTranscriptLine("Bot", botText);
+                }
+                return;
+              }
+
+              addTranscriptLine("Bot", botText);
+
+              if (isFeedbackQuestion(botText)) {
+                statusEl.textContent = "Waiting for feedback choice";
+                return;
+              }
+
+              if (isFinalStopYes(botText)) {
+                await completeAndReturn("1");
+                return;
+              }
+
+              if (isFinalStopNo(botText)) {
+                await completeAndReturn("0");
+                return;
+              }
+
+              return;
+            }
+
+            if (msg.type === "error") {
+              console.error("Realtime error:", msg);
+              if (!sessionFinished && !stopInProgress) {
+                statusEl.textContent = "Realtime error - check console";
+              }
+            }
+          } catch (e) {
+            console.error("Event parse error", e, event.data);
+          }
+        };
+
+        try {
+          localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (err) {
+          if (err && err.name === "NotAllowedError") {
+            statusEl.textContent = "Microphone access was denied. Please allow microphone access and try again.";
+            return;
+          }
+          throw err;
+        }
+
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+        statusEl.textContent = "Creating WebRTC offer...";
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        statusEl.textContent = "Connecting to server...";
+        const query = new URLSearchParams({
+          communication_type,
+          setting,
+          caregiver_name,
+          child_name,
+          child_age,
+          main_issue,
+          caregiver_emotion,
+          hidden_case_summary,
+          opening_line,
+          session_id: SESSION_ID
+        }).toString();
+
+        const sdpResponse = await fetch(`/session?${query}`, {
+          method: "POST",
+          body: offer.sdp,
+          headers: {
+            "Content-Type": "application/sdp"
+          }
+        });
+
+        if (!sdpResponse.ok) {
+          const errText = await sdpResponse.text();
+          throw new Error(`SDP exchange failed: ${sdpResponse.status} ${errText}`);
+        }
+
+        const answer = {
+          type: "answer",
+          sdp: await sdpResponse.text()
+        };
+
+        await pc.setRemoteDescription(answer);
+
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        statusEl.textContent = "Live session running";
+
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = `Error: ${err.message}`;
+        await tearDownSession();
+      }
+    }
+
+    async function stopSession() {
+      if (stopInProgress) return;
+      stopInProgress = true;
+
+      await saveTranscriptToServer();
+      await tearDownSession();
+
+      if (sessionFinished) {
+        statusEl.textContent = "Session complete";
+        const targetUrl = buildSafeReturnUrl(pendingAutoFeedback);
+        if (targetUrl) {
+          window.location.href = targetUrl;
+          return;
+        }
+        showReturnSection();
+      } else {
+        statusEl.textContent = "Session stopped before completion";
+        showIncompleteWarning();
+      }
+
+      stopInProgress = false;
+    }
+
+    stopBtn.addEventListener("click", stopSession);
+
+    window.addEventListener("load", () => {
+      setTimeout(() => {
+        startSession();
+      }, 700);
+    });
+  </script>
+</body>
+</html>
