@@ -9,7 +9,9 @@
       max-width: 950px;
       margin: 40px auto;
       padding: 0 20px;
+      color: #111;
     }
+
     button, a.button-link {
       display: inline-block;
       padding: 10px 16px;
@@ -23,14 +25,31 @@
       border-radius: 6px;
       cursor: pointer;
     }
+
     button:disabled {
       opacity: 0.6;
       cursor: not-allowed;
     }
+
     #status {
       margin: 12px 0;
       font-weight: bold;
     }
+
+    #scenarioBox {
+      margin: 18px 0 20px 0;
+      padding: 16px;
+      border: 1px solid #d9d9d9;
+      border-radius: 10px;
+      background: #f8fafc;
+      line-height: 1.5;
+    }
+
+    #scenarioTitle {
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
     #transcript {
       border: 1px solid #ccc;
       padding: 16px;
@@ -38,37 +57,45 @@
       background: #fafafa;
       overflow-y: auto;
     }
+
     .line {
       white-space: pre-wrap;
       margin-bottom: 6px;
     }
+
     .small {
       color: #666;
       font-size: 14px;
     }
+
     #returnSection, #warningSection {
       display: none;
       margin-top: 20px;
       padding: 16px;
       border-radius: 8px;
     }
+
     #returnSection {
       border: 1px solid #d9d9d9;
       background: #f9f9f9;
     }
+
     #warningSection {
       border: 1px solid #e0b4b4;
       background: #fff6f6;
     }
+
     @media (max-width: 768px) {
       body {
         margin: 16px auto;
         padding: 0 12px;
       }
+
       button, a.button-link {
         width: 100%;
         margin-right: 0;
       }
+
       #transcript {
         min-height: 240px;
       }
@@ -78,6 +105,11 @@
 <body>
   <h1>Realtime Voice Communication Case</h1>
   <p class="small">This page runs the live caregiver communication exercise.</p>
+
+  <div id="scenarioBox">
+    <div id="scenarioTitle">Scenario for the student</div>
+    <div id="scenarioText"></div>
+  </div>
 
   <div id="status">Preparing session...</div>
 
@@ -130,6 +162,7 @@
     const warningSection = document.getElementById("warningSection");
     const returnBtn = document.getElementById("returnBtn");
     const manualReturnBtn = document.getElementById("manualReturnBtn");
+    const scenarioTextEl = document.getElementById("scenarioText");
 
     const ALLOWED_RETURN_ORIGINS = [
       "https://communication-ij2amy3ps4hxxgaerltwxt.streamlit.app"
@@ -206,13 +239,32 @@
     const CAREGIVER_ROLE = getQueryParam("caregiver_role", "mother");
     const CHILD_NAME = getQueryParam("child_name", "the child");
     const CHILD_AGE = getQueryParam("child_age", "5 years");
+    const CHILD_SEX = getQueryParam("child_sex", "male");
     const MAIN_ISSUE = getQueryParam("main_issue", "");
     const CAREGIVER_EMOTION = getQueryParam("caregiver_emotion", "worried");
+    const STUDENT_CONTEXT = getQueryParam("student_context", "");
     const HIDDEN_CASE_SUMMARY = getQueryParam("hidden_case_summary", "");
     const OPENING_LINE = getQueryParam(
       "opening_line",
       `Doctor, I'm ${CAREGIVER_NAME}, ${CHILD_NAME}'s ${CAREGIVER_ROLE}. Please can you explain what is happening?`
     );
+    const SIBLINGS = getQueryParam("siblings", "");
+    const RESIDENCE = getQueryParam("residence", "");
+    const HOUSEHOLD_STRUCTURE = getQueryParam("household_structure", "");
+    const SCHOOL_OR_DAYCARE = getQueryParam("school_or_daycare", "");
+    const CAREGIVER_OCCUPATION = getQueryParam("caregiver_occupation", "");
+    const CAREGIVER_UNDERSTANDING = getQueryParam("caregiver_understanding", "");
+
+    function renderScenarioText() {
+      if (STUDENT_CONTEXT && STUDENT_CONTEXT.trim()) {
+        scenarioTextEl.textContent = STUDENT_CONTEXT;
+        return;
+      }
+
+      scenarioTextEl.textContent =
+        `You are speaking to ${CAREGIVER_NAME}, the ${CAREGIVER_ROLE} of ${CHILD_NAME}, a ${CHILD_AGE} old child, in the ${SETTING.toLowerCase()}. `
+        + `The task is ${COMMUNICATION_TYPE.toLowerCase()} regarding ${MAIN_ISSUE || "the child's condition"}.`;
+    }
 
     function buildSafeReturnUrl(autoFeedback = "0") {
       const rawReturnUrl = getQueryParam("return_url", "");
@@ -285,17 +337,25 @@
           caregiver_role: CAREGIVER_ROLE || null,
           child_name: CHILD_NAME || null,
           child_age: CHILD_AGE || null,
+          child_sex: CHILD_SEX || null,
           main_issue: MAIN_ISSUE || null,
           caregiver_emotion: CAREGIVER_EMOTION || null,
+          student_context: STUDENT_CONTEXT || null,
           hidden_case_summary: HIDDEN_CASE_SUMMARY || null,
           opening_line: OPENING_LINE || null,
+          siblings: SIBLINGS || null,
+          residence: RESIDENCE || null,
+          household_structure: HOUSEHOLD_STRUCTURE || null,
+          school_or_daycare: SCHOOL_OR_DAYCARE || null,
+          caregiver_occupation: CAREGIVER_OCCUPATION || null,
+          caregiver_understanding: CAREGIVER_UNDERSTANDING || null,
           started_at: sessionStartTime,
           ended_at: finalEndTime,
           duration_seconds: durationSeconds(sessionStartTime, finalEndTime),
           session_completed: sessionFinished,
           timeout_reason: timeoutReason,
           transcript_lines: transcriptLines,
-          transcript_text: transcriptLines.map(x => `${x.speaker}: ${x.text}`).join("\\n")
+          transcript_text: transcriptLines.map(x => `${x.speaker}: ${x.text}`).join("\n")
         };
 
         const response = await fetch("/save_transcript", {
@@ -577,10 +637,18 @@
           caregiver_role: CAREGIVER_ROLE,
           child_name: CHILD_NAME,
           child_age: CHILD_AGE,
+          child_sex: CHILD_SEX,
           main_issue: MAIN_ISSUE,
           caregiver_emotion: CAREGIVER_EMOTION,
+          student_context: STUDENT_CONTEXT,
           hidden_case_summary: HIDDEN_CASE_SUMMARY,
           opening_line: OPENING_LINE,
+          siblings: SIBLINGS,
+          residence: RESIDENCE,
+          household_structure: HOUSEHOLD_STRUCTURE,
+          school_or_daycare: SCHOOL_OR_DAYCARE,
+          caregiver_occupation: CAREGIVER_OCCUPATION,
+          caregiver_understanding: CAREGIVER_UNDERSTANDING,
           session_id: SESSION_ID,
           study_number: STUDY_NUMBER,
           interaction_mode: INTERACTION_MODE
@@ -655,6 +723,7 @@
     stopBtn.addEventListener("click", stopSession);
 
     window.addEventListener("load", () => {
+      renderScenarioText();
       setReturnLinks("0");
       startSession();
     });
