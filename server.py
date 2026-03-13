@@ -5,6 +5,7 @@ import httpx
 import os
 import json
 from pathlib import Path
+from datetime import datetime, timezone
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
@@ -14,9 +15,54 @@ OPENAI_API_KEY = os.environ["OPENAI_API_KEY"].strip()
 TRANSCRIPTS_DIR = Path("transcripts")
 TRANSCRIPTS_DIR.mkdir(exist_ok=True)
 
-FINAL_FEEDBACK_QUESTION = "Would you like to get your assessment and feedback now?"
-FINAL_STOP_YES = "Thank you. Please click stop session now."
-FINAL_STOP_NO = "Okay. Please click stop session now."
+FINAL_FEEDBACK_QUESTION = "Would you like to receive your assessment now?"
+
+FEMALE_VOICE = "marin"
+MALE_VOICE = "cedar"
+
+
+def now_iso_utc() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def safe_session_id(session_id: str) -> str:
+    return "".join(c for c in str(session_id).strip() if c.isalnum() or c in "-_")
+
+
+def parse_iso_datetime(value: str | None):
+    if not value:
+        return None
+    try:
+        cleaned = str(value).strip()
+        if cleaned.endswith("Z"):
+            cleaned = cleaned.replace("Z", "+00:00")
+        return datetime.fromisoformat(cleaned)
+    except Exception:
+        return None
+
+
+def compute_duration_seconds(started_at: str | None, ended_at: str | None):
+    start_dt = parse_iso_datetime(started_at)
+    end_dt = parse_iso_datetime(ended_at)
+    if not start_dt or not end_dt:
+        return None
+    try:
+        return max(0, int((end_dt - start_dt).total_seconds()))
+    except Exception:
+        return None
+
+
+def choose_voice(caregiver_gender: str, caregiver_role: str) -> str:
+    gender = str(caregiver_gender or "").strip().lower()
+    role = str(caregiver_role or "").strip().lower()
+
+    if gender == "male":
+        return MALE_VOICE
+    if gender == "female":
+        return FEMALE_VOICE
+    if any(word in role for word in ["father", "grandfather", "uncle", "male"]):
+        return MALE_VOICE
+    return FEMALE_VOICE
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -30,7 +76,7 @@ async def save_transcript(request: Request):
         body = await request.json()
 
         session_id = str(body.get("session_id", "")).strip()
-        safe_id = "".join(c for c in session_id if c.isalnum() or c in "-_")
+        safe_id = safe_session_id(session_id)
 
         if not safe_id:
             return JSONResponse(
@@ -40,8 +86,40 @@ async def save_transcript(request: Request):
 
         transcript_file = TRANSCRIPTS_DIR / f"transcript_{safe_id}.json"
 
+        started_at = body.get("started_at")
+        ended_at = body.get("ended_at") or now_iso_utc()
+        duration_seconds = body.get("duration_seconds")
+
+        if duration_seconds is None:
+            duration_seconds = compute_duration_seconds(started_at, ended_at)
+
+        transcript_payload = {
+            "session_id": safe_id,
+            "study_number": body.get("study_number"),
+            "interaction_mode": body.get("interaction_mode"),
+            "communication_type": body.get("communication_type"),
+            "setting": body.get("setting"),
+            "caregiver_name": body.get("caregiver_name"),
+            "caregiver_gender": body.get("caregiver_gender"),
+            "caregiver_role": body.get("caregiver_role"),
+            "child_name": body.get("child_name"),
+            "child_age": body.get("child_age"),
+            "main_issue": body.get("main_issue"),
+            "caregiver_emotion": body.get("caregiver_emotion"),
+            "hidden_case_summary": body.get("hidden_case_summary"),
+            "opening_line": body.get("opening_line"),
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "duration_seconds": duration_seconds,
+            "session_completed": body.get("session_completed", False),
+            "timeout_reason": body.get("timeout_reason"),
+            "transcript_lines": body.get("transcript_lines", []),
+            "transcript_text": body.get("transcript_text", ""),
+            "saved_at": now_iso_utc(),
+        }
+
         with open(transcript_file, "w", encoding="utf-8") as f:
-            json.dump(body, f, ensure_ascii=False, indent=2)
+            json.dump(transcript_payload, f, ensure_ascii=False, indent=2)
 
         return JSONResponse({"status": "ok", "session_id": safe_id})
 
@@ -62,7 +140,7 @@ async def latest_transcript(session_id: str | None = None):
                 status_code=400,
             )
 
-        safe_id = "".join(c for c in str(session_id) if c.isalnum() or c in "-_")
+        safe_id = safe_session_id(session_id)
         transcript_file = TRANSCRIPTS_DIR / f"transcript_{safe_id}.json"
 
         if not transcript_file.exists():
@@ -90,6 +168,8 @@ async def create_session(request: Request):
         communication_type = request.query_params.get("communication_type", "Explain diagnosis").strip() or "Explain diagnosis"
         setting = request.query_params.get("setting", "Paediatric ward").strip() or "Paediatric ward"
         caregiver_name = request.query_params.get("caregiver_name", "Nomsa").strip() or "Nomsa"
+        caregiver_gender = request.query_params.get("caregiver_gender", "female").strip() or "female"
+        caregiver_role = request.query_params.get("caregiver_role", "mother").strip() or "mother"
         child_name = request.query_params.get("child_name", "the child").strip() or "the child"
         child_age = request.query_params.get("child_age", "5 years").strip() or "5 years"
         main_issue = request.query_params.get("main_issue", "").strip()
@@ -97,8 +177,14 @@ async def create_session(request: Request):
         hidden_case_summary = request.query_params.get("hidden_case_summary", "").strip()
         opening_line = request.query_params.get(
             "opening_line",
-            f"Doctor, I'm {caregiver_name}. Please can you explain what is happening with {child_name}?"
-        ).strip() or f"Doctor, I'm {caregiver_name}. Please can you explain what is happening with {child_name}?"
+            f"Doctor, I'm {caregiver_name}, {child_name}'s {caregiver_role}. Please can you explain what is happening?"
+        ).strip() or f"Doctor, I'm {caregiver_name}, {child_name}'s {caregiver_role}. Please can you explain what is happening?"
+
+        session_id = request.query_params.get("session_id", "").strip()
+        study_number = request.query_params.get("study_number", "").strip()
+        interaction_mode = request.query_params.get("interaction_mode", "").strip()
+
+        selected_voice = choose_voice(caregiver_gender, caregiver_role)
 
         instructions = f"""
 You are simulating a realistic paediatric caregiver communication station for a final-year medical student in South Africa.
@@ -112,10 +198,17 @@ The learner has selected:
 
 Case details:
 - Caregiver name: {caregiver_name}
+- Caregiver gender: {caregiver_gender}
+- Caregiver role: {caregiver_role}
 - Child name: {child_name}
 - Child age: {child_age}
 - Main issue: {main_issue}
 - Caregiver emotion: {caregiver_emotion}
+
+Session metadata:
+- Study number: {study_number or "Not provided"}
+- Interaction mode: {interaction_mode or "Not provided"}
+- Session ID: {session_id or "Not provided"}
 
 Hidden case summary:
 {hidden_case_summary}
@@ -128,6 +221,7 @@ You are NOT the preceptor.
 
 Core identity rules:
 - Your name is "{caregiver_name}".
+- Your role is "{caregiver_role}".
 - Your child's name is "{child_name}".
 - Your child is "{child_age}" old.
 - NEVER use the learner's name as your own name.
@@ -171,27 +265,17 @@ Clarity rules:
 - Do not list hidden case details all at once.
 - Keep everything internally consistent with the hidden case summary.
 
-Examples of good behaviour:
-- Learner explains a diagnosis clearly -> caregiver responds with realistic understanding, worry, or follow-up questions.
-- Learner gives bad news with empathy -> caregiver may show emotion and ask what happens next.
-- Learner explains a management plan unclearly -> caregiver asks for simpler explanation.
-- Learner is abrupt or jargon-heavy -> caregiver shows confusion or distress.
-- Learner asks if you have questions -> caregiver may ask a realistic question or, if the overall conversation feels complete, move to the ending step.
-
 End-of-conversation rule:
 - If the learner clearly indicates that they are finished, or clearly asks whether you have any more questions in a way that closes the discussion, and the communication task has been substantially completed, respond ONLY with:
   "{FINAL_FEEDBACK_QUESTION}"
 
-Feedback-choice rule:
-- If you have already asked:
-  "{FINAL_FEEDBACK_QUESTION}"
-  and the learner says yes or anything clearly meaning yes, respond ONLY with:
-  "{FINAL_STOP_YES}"
-- If you have already asked:
-  "{FINAL_FEEDBACK_QUESTION}"
-  and the learner says no or anything clearly meaning no, respond ONLY with:
-  "{FINAL_STOP_NO}"
-- After either of those replies, say nothing more.
+After asking "{FINAL_FEEDBACK_QUESTION}":
+- Wait for the learner's answer.
+- Do not say anything else unless the learner asks a simple clarification.
+- Do not say "click stop session".
+- Do not give feedback.
+- Do not score.
+- Do not coach.
 
 Very important:
 - Do not ask "{FINAL_FEEDBACK_QUESTION}" too early.
@@ -213,13 +297,13 @@ Very important:
                         "type": "server_vad",
                         "threshold": 0.5,
                         "prefix_padding_ms": 400,
-                        "silence_duration_ms": 1400,
+                        "silence_duration_ms": 700,
                         "create_response": True,
                         "interrupt_response": True
                     }
                 },
                 "output": {
-                    "voice": "marin"
+                    "voice": selected_voice
                 }
             }
         }
