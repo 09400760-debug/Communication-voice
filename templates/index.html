@@ -60,6 +60,19 @@
       border: 1px solid #e0b4b4;
       background: #fff6f6;
     }
+    @media (max-width: 768px) {
+      body {
+        margin: 16px auto;
+        padding: 0 12px;
+      }
+      button, a.button-link {
+        width: 100%;
+        margin-right: 0;
+      }
+      #transcript {
+        min-height: 240px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -98,7 +111,15 @@
     let transcriptSaved = false;
     let stopInProgress = false;
     let autoStarted = false;
+
+    let sessionStartTime = null;
+    let sessionEndTime = null;
+    let lastStudentSpeechTime = null;
+    let warningIssued = false;
     let pendingAutoFeedback = "0";
+    let timeoutReason = null;
+    let timerHandle = null;
+    let awaitingFeedbackChoice = false;
 
     const statusEl = document.getElementById("status");
     const transcriptEl = document.getElementById("transcript");
@@ -114,14 +135,11 @@
       "https://communication-ij2amy3ps4hxxgaerltwxt.streamlit.app"
     ];
 
-    const FINAL_FEEDBACK_QUESTION =
-      "Would you like to get your assessment and feedback now?";
+    const FINAL_FEEDBACK_QUESTION = "Would you like to receive your assessment now?";
 
-    const FINAL_STOP_YES =
-      "Thank you. Please click stop session now.";
-
-    const FINAL_STOP_NO =
-      "Okay. Please click stop session now.";
+    const INACTIVITY_LIMIT_MS = 5 * 60 * 1000;
+    const WARNING_AT_MS = 25 * 60 * 1000;
+    const HARD_STOP_AT_MS = 30 * 60 * 1000;
 
     function getQueryParam(name, fallback = "") {
       const params = new URLSearchParams(window.location.search);
@@ -136,7 +154,65 @@
         .replace(/\s+/g, " ");
     }
 
+    function isoNow() {
+      return new Date().toISOString();
+    }
+
+    function durationSeconds(startIso, endIso) {
+      if (!startIso || !endIso) return null;
+      const start = new Date(startIso).getTime();
+      const end = new Date(endIso).getTime();
+      if (Number.isNaN(start) || Number.isNaN(end)) return null;
+      return Math.max(0, Math.round((end - start) / 1000));
+    }
+
+    function elapsedMs() {
+      if (!sessionStartTime) return 0;
+      return Math.max(0, new Date().getTime() - new Date(sessionStartTime).getTime());
+    }
+
+    function msSinceLastStudentSpeech() {
+      if (!lastStudentSpeechTime) return elapsedMs();
+      return Math.max(0, new Date().getTime() - new Date(lastStudentSpeechTime).getTime());
+    }
+
+    function speakLocalMessage(text) {
+      try {
+        if (!("speechSynthesis" in window)) return;
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = "en-ZA";
+        window.speechSynthesis.speak(utterance);
+      } catch (err) {
+        console.warn("speechSynthesis unavailable", err);
+      }
+    }
+
+    function isYes(text) {
+      const t = normalizeText(text);
+      const yesValues = new Set([
+        "yes", "y", "yeah", "yep", "okay", "ok", "sure", "please do",
+        "go ahead", "continue", "yes please", "okay yes", "ok yes"
+      ]);
+      return yesValues.has(t) || t.startsWith("yes ");
+    }
+
     const SESSION_ID = getQueryParam("session_id", "");
+    const STUDY_NUMBER = getQueryParam("study_number", "");
+    const INTERACTION_MODE = getQueryParam("interaction_mode", "");
+    const COMMUNICATION_TYPE = getQueryParam("communication_type", "Explain diagnosis");
+    const SETTING = getQueryParam("setting", "Paediatric ward");
+    const CAREGIVER_NAME = getQueryParam("caregiver_name", "Nomsa");
+    const CAREGIVER_GENDER = getQueryParam("caregiver_gender", "female");
+    const CAREGIVER_ROLE = getQueryParam("caregiver_role", "mother");
+    const CHILD_NAME = getQueryParam("child_name", "the child");
+    const CHILD_AGE = getQueryParam("child_age", "5 years");
+    const MAIN_ISSUE = getQueryParam("main_issue", "");
+    const CAREGIVER_EMOTION = getQueryParam("caregiver_emotion", "worried");
+    const HIDDEN_CASE_SUMMARY = getQueryParam("hidden_case_summary", "");
+    const OPENING_LINE = getQueryParam(
+      "opening_line",
+      `Doctor, I'm ${CAREGIVER_NAME}, ${CHILD_NAME}'s ${CAREGIVER_ROLE}. Please can you explain what is happening?`
+    );
 
     function buildSafeReturnUrl(autoFeedback = "0") {
       const rawReturnUrl = getQueryParam("return_url", "");
@@ -173,8 +249,6 @@
       }
     }
 
-    setReturnLinks("0");
-
     function appendTranscriptLineToDOM(speaker, text) {
       const line = document.createElement("div");
       line.className = "line";
@@ -198,10 +272,30 @@
       }
 
       try {
+        const finalEndTime = sessionEndTime || isoNow();
+
         const payload = {
           session_id: SESSION_ID,
+          study_number: STUDY_NUMBER || null,
+          interaction_mode: INTERACTION_MODE || "Realtime voice",
+          communication_type: COMMUNICATION_TYPE || null,
+          setting: SETTING || null,
+          caregiver_name: CAREGIVER_NAME || null,
+          caregiver_gender: CAREGIVER_GENDER || null,
+          caregiver_role: CAREGIVER_ROLE || null,
+          child_name: CHILD_NAME || null,
+          child_age: CHILD_AGE || null,
+          main_issue: MAIN_ISSUE || null,
+          caregiver_emotion: CAREGIVER_EMOTION || null,
+          hidden_case_summary: HIDDEN_CASE_SUMMARY || null,
+          opening_line: OPENING_LINE || null,
+          started_at: sessionStartTime,
+          ended_at: finalEndTime,
+          duration_seconds: durationSeconds(sessionStartTime, finalEndTime),
+          session_completed: sessionFinished,
+          timeout_reason: timeoutReason,
           transcript_lines: transcriptLines,
-          transcript_text: transcriptLines.map(x => `${x.speaker}: ${x.text}`).join("\n")
+          transcript_text: transcriptLines.map(x => `${x.speaker}: ${x.text}`).join("\\n")
         };
 
         const response = await fetch("/save_transcript", {
@@ -232,6 +326,17 @@
       transcriptSaved = false;
       stopInProgress = false;
       pendingAutoFeedback = "0";
+      sessionStartTime = null;
+      sessionEndTime = null;
+      lastStudentSpeechTime = null;
+      warningIssued = false;
+      timeoutReason = null;
+      awaitingFeedbackChoice = false;
+
+      if (timerHandle) {
+        clearInterval(timerHandle);
+        timerHandle = null;
+      }
 
       transcriptEl.innerHTML = "";
       returnSection.style.display = "none";
@@ -253,15 +358,12 @@
       return normalizeText(botText) === normalizeText(FINAL_FEEDBACK_QUESTION);
     }
 
-    function isFinalStopYes(botText) {
-      return normalizeText(botText) === normalizeText(FINAL_STOP_YES);
-    }
-
-    function isFinalStopNo(botText) {
-      return normalizeText(botText) === normalizeText(FINAL_STOP_NO);
-    }
-
     async function tearDownSession() {
+      if (timerHandle) {
+        clearInterval(timerHandle);
+        timerHandle = null;
+      }
+
       if (dc) {
         try { dc.close(); } catch {}
         dc = null;
@@ -288,9 +390,10 @@
       stopBtn.disabled = true;
     }
 
-    async function completeAndReturn(autoFeedback = "0") {
+    async function completeAndReturn(autoFeedback = "1") {
       sessionFinished = true;
       pendingAutoFeedback = autoFeedback;
+      sessionEndTime = isoNow();
       setReturnLinks(autoFeedback);
 
       statusEl.textContent = autoFeedback === "1"
@@ -307,27 +410,61 @@
       }
     }
 
+    async function forceTimeoutReturn(reason) {
+      if (sessionFinished || stopInProgress) return;
+
+      timeoutReason = reason;
+      sessionFinished = true;
+      pendingAutoFeedback = "1";
+      sessionEndTime = isoNow();
+
+      if (reason === "inactivity") {
+        addTranscriptLine("Bot", "Session ended due to inactivity. Returning for feedback now.");
+        speakLocalMessage("There has been no speech for five minutes. The session is ending now.");
+      } else if (reason === "max_duration") {
+        addTranscriptLine("Bot", "Session ended because the 30 minute limit was reached. Returning for feedback now.");
+        speakLocalMessage("The 30 minute session limit has been reached. The session is ending now.");
+      }
+
+      await completeAndReturn("1");
+    }
+
+    function startTimers() {
+      timerHandle = setInterval(async () => {
+        if (sessionFinished || stopInProgress) return;
+
+        const totalElapsed = elapsedMs();
+
+        if (!warningIssued && totalElapsed >= WARNING_AT_MS) {
+          warningIssued = true;
+          const warningText = "You have five minutes left in this session.";
+          addTranscriptLine("Bot", warningText);
+          speakLocalMessage(warningText);
+          statusEl.textContent = "Five-minute warning issued";
+        }
+
+        if (totalElapsed >= HARD_STOP_AT_MS) {
+          await forceTimeoutReturn("max_duration");
+          return;
+        }
+
+        if (msSinceLastStudentSpeech() >= INACTIVITY_LIMIT_MS) {
+          await forceTimeoutReturn("inactivity");
+        }
+      }, 15000);
+    }
+
     async function startSession() {
       if (autoStarted) return;
       autoStarted = true;
 
       try {
         resetUiForNewSession();
+        sessionStartTime = isoNow();
+        lastStudentSpeechTime = sessionStartTime;
         statusEl.textContent = "Accessing microphone...";
 
-        const communication_type = getQueryParam("communication_type", "Explain diagnosis");
-        const setting = getQueryParam("setting", "Paediatric ward");
-        const caregiver_name = getQueryParam("caregiver_name", "Nomsa");
-        const child_name = getQueryParam("child_name", "the child");
-        const child_age = getQueryParam("child_age", "5 years");
-        const main_issue = getQueryParam("main_issue", "");
-        const caregiver_emotion = getQueryParam("caregiver_emotion", "worried");
-        const hidden_case_summary = getQueryParam("hidden_case_summary", "");
-        const opening_line = getQueryParam(
-          "opening_line",
-          `Doctor, I'm ${caregiver_name}. Please can you explain what is happening with ${child_name}?`
-        );
-        const normalizedOpeningLine = normalizeText(opening_line);
+        const normalizedOpeningLine = normalizeText(OPENING_LINE);
 
         if (!SESSION_ID) {
           statusEl.textContent = "Missing session ID. Please return to the main app and start a new case.";
@@ -364,6 +501,13 @@
             if (msg.type === "conversation.item.input_audio_transcription.completed") {
               if (msg.transcript) {
                 addTranscriptLine("Student", msg.transcript);
+                lastStudentSpeechTime = isoNow();
+
+                if (awaitingFeedbackChoice && isYes(msg.transcript)) {
+                  awaitingFeedbackChoice = false;
+                  await completeAndReturn("1");
+                  return;
+                }
               }
               return;
             }
@@ -389,17 +533,8 @@
               addTranscriptLine("Bot", botText);
 
               if (isFeedbackQuestion(botText)) {
+                awaitingFeedbackChoice = true;
                 statusEl.textContent = "Waiting for feedback choice";
-                return;
-              }
-
-              if (isFinalStopYes(botText)) {
-                await completeAndReturn("1");
-                return;
-              }
-
-              if (isFinalStopNo(botText)) {
-                await completeAndReturn("0");
                 return;
               }
 
@@ -435,16 +570,20 @@
 
         statusEl.textContent = "Connecting to server...";
         const query = new URLSearchParams({
-          communication_type,
-          setting,
-          caregiver_name,
-          child_name,
-          child_age,
-          main_issue,
-          caregiver_emotion,
-          hidden_case_summary,
-          opening_line,
-          session_id: SESSION_ID
+          communication_type: COMMUNICATION_TYPE,
+          setting: SETTING,
+          caregiver_name: CAREGIVER_NAME,
+          caregiver_gender: CAREGIVER_GENDER,
+          caregiver_role: CAREGIVER_ROLE,
+          child_name: CHILD_NAME,
+          child_age: CHILD_AGE,
+          main_issue: MAIN_ISSUE,
+          caregiver_emotion: CAREGIVER_EMOTION,
+          hidden_case_summary: HIDDEN_CASE_SUMMARY,
+          opening_line: OPENING_LINE,
+          session_id: SESSION_ID,
+          study_number: STUDY_NUMBER,
+          interaction_mode: INTERACTION_MODE
         }).toString();
 
         const sdpResponse = await fetch(`/session?${query}`, {
@@ -470,6 +609,7 @@
         startBtn.disabled = true;
         stopBtn.disabled = false;
         statusEl.textContent = "Live session running";
+        startTimers();
 
       } catch (err) {
         console.error(err);
@@ -482,12 +622,23 @@
       if (stopInProgress) return;
       stopInProgress = true;
 
+      if (!sessionEndTime) {
+        sessionEndTime = isoNow();
+      }
+
+      const hasTranscript = transcriptLines.length > 0;
+
+      if (!sessionFinished && hasTranscript) {
+        sessionFinished = true;
+        pendingAutoFeedback = "1";
+      }
+
       await saveTranscriptToServer();
       await tearDownSession();
 
       if (sessionFinished) {
         statusEl.textContent = "Session complete";
-        const targetUrl = buildSafeReturnUrl(pendingAutoFeedback);
+        const targetUrl = buildSafeReturnUrl(pendingAutoFeedback || "1");
         if (targetUrl) {
           window.location.href = targetUrl;
           return;
@@ -504,9 +655,8 @@
     stopBtn.addEventListener("click", stopSession);
 
     window.addEventListener("load", () => {
-      setTimeout(() => {
-        startSession();
-      }, 700);
+      setReturnLinks("0");
+      startSession();
     });
   </script>
 </body>
