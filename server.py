@@ -104,10 +104,18 @@ async def save_transcript(request: Request):
             "caregiver_role": body.get("caregiver_role"),
             "child_name": body.get("child_name"),
             "child_age": body.get("child_age"),
+            "child_sex": body.get("child_sex"),
             "main_issue": body.get("main_issue"),
             "caregiver_emotion": body.get("caregiver_emotion"),
+            "student_context": body.get("student_context"),
             "hidden_case_summary": body.get("hidden_case_summary"),
             "opening_line": body.get("opening_line"),
+            "siblings": body.get("siblings"),
+            "residence": body.get("residence"),
+            "household_structure": body.get("household_structure"),
+            "school_or_daycare": body.get("school_or_daycare"),
+            "caregiver_occupation": body.get("caregiver_occupation"),
+            "caregiver_understanding": body.get("caregiver_understanding"),
             "started_at": started_at,
             "ended_at": ended_at,
             "duration_seconds": duration_seconds,
@@ -172,13 +180,22 @@ async def create_session(request: Request):
         caregiver_role = request.query_params.get("caregiver_role", "mother").strip() or "mother"
         child_name = request.query_params.get("child_name", "the child").strip() or "the child"
         child_age = request.query_params.get("child_age", "5 years").strip() or "5 years"
+        child_sex = request.query_params.get("child_sex", "male").strip() or "male"
         main_issue = request.query_params.get("main_issue", "").strip()
         caregiver_emotion = request.query_params.get("caregiver_emotion", "worried").strip() or "worried"
+        student_context = request.query_params.get("student_context", "").strip()
         hidden_case_summary = request.query_params.get("hidden_case_summary", "").strip()
         opening_line = request.query_params.get(
             "opening_line",
             f"Doctor, I'm {caregiver_name}, {child_name}'s {caregiver_role}. Please can you explain what is happening?"
         ).strip() or f"Doctor, I'm {caregiver_name}, {child_name}'s {caregiver_role}. Please can you explain what is happening?"
+
+        siblings = request.query_params.get("siblings", "").strip()
+        residence = request.query_params.get("residence", "").strip()
+        household_structure = request.query_params.get("household_structure", "").strip()
+        school_or_daycare = request.query_params.get("school_or_daycare", "").strip()
+        caregiver_occupation = request.query_params.get("caregiver_occupation", "").strip()
+        caregiver_understanding = request.query_params.get("caregiver_understanding", "").strip()
 
         session_id = request.query_params.get("session_id", "").strip()
         study_number = request.query_params.get("study_number", "").strip()
@@ -200,10 +217,20 @@ Case details:
 - Caregiver name: {caregiver_name}
 - Caregiver gender: {caregiver_gender}
 - Caregiver role: {caregiver_role}
+- Caregiver occupation: {caregiver_occupation or "Not specified"}
 - Child name: {child_name}
 - Child age: {child_age}
+- Child sex: {child_sex}
 - Main issue: {main_issue}
 - Caregiver emotion: {caregiver_emotion}
+- Current caregiver understanding: {caregiver_understanding or "Not specified"}
+- Siblings: {siblings or "Not specified"}
+- Residence: {residence or "Not specified"}
+- Household structure: {household_structure or "Not specified"}
+- School/daycare: {school_or_daycare or "Not specified"}
+
+Visible student context:
+{student_context or "Not provided"}
 
 Session metadata:
 - Study number: {study_number or "Not provided"}
@@ -247,6 +274,19 @@ Communication-station rules:
 - If the learner uses medical jargon, ask for clarification in ordinary language.
 - If the learner does not explain next steps clearly, it is natural for you to ask what happens next.
 - If the learner does not check understanding, it is natural for you still to sound uncertain or confused.
+
+Realism rules:
+- You should know obvious background facts about your child, home, and family comfortably and naturally.
+- If asked about siblings, where you live, who stays at home, daycare/school, or your work, answer confidently and directly using the known facts above.
+- Do NOT say "I'm not sure" to ordinary non-medical facts that a normal caregiver would know.
+- Uncertainty should mainly relate to:
+  - the diagnosis
+  - seriousness of the condition
+  - prognosis
+  - next steps
+  - treatment plan
+  - implications for the child
+  - difficult communication issues
 
 Language rules:
 - The interaction must stay in English.
