@@ -11,7 +11,6 @@
       padding: 0 20px;
       color: #111;
     }
-
     button, a.button-link {
       display: inline-block;
       padding: 10px 16px;
@@ -25,17 +24,14 @@
       border-radius: 6px;
       cursor: pointer;
     }
-
     button:disabled {
       opacity: 0.6;
       cursor: not-allowed;
     }
-
     #status {
       margin: 12px 0;
       font-weight: bold;
     }
-
     #scenarioBox {
       margin: 18px 0 20px 0;
       padding: 16px;
@@ -44,12 +40,10 @@
       background: #f8fafc;
       line-height: 1.5;
     }
-
     #scenarioTitle {
       font-weight: 700;
       margin-bottom: 8px;
     }
-
     #transcript {
       border: 1px solid #ccc;
       padding: 16px;
@@ -57,45 +51,37 @@
       background: #fafafa;
       overflow-y: auto;
     }
-
     .line {
       white-space: pre-wrap;
       margin-bottom: 6px;
     }
-
     .small {
       color: #666;
       font-size: 14px;
     }
-
     #returnSection, #warningSection {
       display: none;
       margin-top: 20px;
       padding: 16px;
       border-radius: 8px;
     }
-
     #returnSection {
       border: 1px solid #d9d9d9;
       background: #f9f9f9;
     }
-
     #warningSection {
       border: 1px solid #e0b4b4;
       background: #fff6f6;
     }
-
     @media (max-width: 768px) {
       body {
         margin: 16px auto;
         padding: 0 12px;
       }
-
       button, a.button-link {
         width: 100%;
         margin-right: 0;
       }
-
       #transcript {
         min-height: 240px;
       }
@@ -143,7 +129,6 @@
     let transcriptSaved = false;
     let stopInProgress = false;
     let autoStarted = false;
-
     let sessionStartTime = null;
     let sessionEndTime = null;
     let lastStudentSpeechTime = null;
@@ -229,6 +214,14 @@
       return yesValues.has(t) || t.startsWith("yes ");
     }
 
+    function isNo(text) {
+      const t = normalizeText(text);
+      const noValues = new Set([
+        "no", "n", "nope", "not now", "later", "no thanks", "not yet"
+      ]);
+      return noValues.has(t) || t.startsWith("no ");
+    }
+
     const SESSION_ID = getQueryParam("session_id", "");
     const STUDY_NUMBER = getQueryParam("study_number", "");
     const INTERACTION_MODE = getQueryParam("interaction_mode", "");
@@ -260,7 +253,6 @@
         scenarioTextEl.textContent = STUDENT_CONTEXT;
         return;
       }
-
       scenarioTextEl.textContent =
         `You are speaking to ${CAREGIVER_NAME}, the ${CAREGIVER_ROLE} of ${CHILD_NAME}, a ${CHILD_AGE} old child, in the ${SETTING.toLowerCase()}. `
         + `The task is ${COMMUNICATION_TYPE.toLowerCase()} regarding ${MAIN_ISSUE || "the child's condition"}.`;
@@ -415,7 +407,8 @@
     }
 
     function isFeedbackQuestion(botText) {
-      return normalizeText(botText) === normalizeText(FINAL_FEEDBACK_QUESTION);
+      const t = normalizeText(botText);
+      return t.includes("receive your assessment now") || t.includes("assessment now");
     }
 
     async function tearDownSession() {
@@ -563,10 +556,17 @@
                 addTranscriptLine("Student", msg.transcript);
                 lastStudentSpeechTime = isoNow();
 
-                if (awaitingFeedbackChoice && isYes(msg.transcript)) {
-                  awaitingFeedbackChoice = false;
-                  await completeAndReturn("1");
-                  return;
+                if (awaitingFeedbackChoice) {
+                  if (isYes(msg.transcript)) {
+                    awaitingFeedbackChoice = false;
+                    await completeAndReturn("1");
+                    return;
+                  }
+                  if (isNo(msg.transcript)) {
+                    awaitingFeedbackChoice = false;
+                    await completeAndReturn("0");
+                    return;
+                  }
                 }
               }
               return;
@@ -678,7 +678,6 @@
         stopBtn.disabled = false;
         statusEl.textContent = "Live session running";
         startTimers();
-
       } catch (err) {
         console.error(err);
         statusEl.textContent = `Error: ${err.message}`;
