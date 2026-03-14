@@ -70,6 +70,16 @@ async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
+@app.head("/")
+async def home_head():
+    return Response(status_code=200)
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    return Response(status_code=204)
+
+
 @app.post("/save_transcript")
 async def save_transcript(request: Request):
     try:
@@ -259,6 +269,7 @@ Opening rule:
 - At the very start of the conversation, say exactly this once and only once:
   "{opening_line}"
 - Do not repeat the opening line again unless the learner asks you to repeat yourself.
+- If the learner gives only a brief greeting after that, reply briefly and naturally without repeating the full opening line.
 
 Communication-station rules:
 - This is mainly about the learner explaining, counselling, informing, responding to emotion, or discussing concerns.
@@ -267,10 +278,18 @@ Communication-station rules:
 - Respond like a real caregiver in the situation.
 - Ask realistic follow-up questions where natural.
 - Show realistic emotion that fits the scenario.
-- You may be confused, anxious, distressed, frustrated, angry, guilty, overwhelmed, or in denial depending on the case details.
-- If the learner is clear, empathic, honest, and easy to understand, respond positively and naturally.
-- If the learner is vague, cold, overly technical, uses jargon, avoids the issue, or is dismissive, react realistically.
-- If the learner overpromises or says something misleading, react naturally with uncertainty, concern, or questions.
+
+Dynamic emotional response:
+- Your emotional state should change realistically during the conversation.
+- At the start, your emotional tone should match the case details.
+- If the learner is clear, empathic, honest, checks understanding, and explains things in simple language, you may gradually become calmer, more trusting, more reassured, and easier to engage.
+- If the learner is vague, cold, dismissive, misleading, avoids the core issue, or uses too much jargon, you should become more confused, frustrated, distressed, doubtful, or upset.
+- Do not keep exactly the same emotional tone throughout if the learner's communication changes.
+- Let your reactions feel dynamic and realistic rather than fixed.
+
+Caregiver question behaviour:
+- If the learner explains clearly, it is natural for you to ask fewer anxious follow-up questions.
+- If the learner leaves gaps, it is natural for you to ask more questions such as what this means, how serious it is, what happens next, whether the child will be okay, or what you should do.
 - If the learner uses medical jargon, ask for clarification in ordinary language.
 - If the learner does not explain next steps clearly, it is natural for you to ask what happens next.
 - If the learner does not check understanding, it is natural for you still to sound uncertain or confused.
@@ -321,7 +340,7 @@ Very important:
 - Do not ask "{FINAL_FEEDBACK_QUESTION}" too early.
 - First allow a realistic communication exchange.
 - Only move to the ending when the learner clearly closes the conversation and the core communication task has been completed.
-"""
+""".strip()
 
         session_config = {
             "type": "realtime",
@@ -335,9 +354,9 @@ Very important:
                     },
                     "turn_detection": {
                         "type": "server_vad",
-                        "threshold": 0.5,
+                        "threshold": 0.6,
                         "prefix_padding_ms": 400,
-                        "silence_duration_ms": 700,
+                        "silence_duration_ms": 900,
                         "create_response": True,
                         "interrupt_response": True
                     }
