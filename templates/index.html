@@ -154,7 +154,6 @@
     ];
 
     const FINAL_FEEDBACK_QUESTION = "Would you like to receive your assessment now?";
-
     const INACTIVITY_LIMIT_MS = 5 * 60 * 1000;
     const WARNING_AT_MS = 25 * 60 * 1000;
     const HARD_STOP_AT_MS = 30 * 60 * 1000;
@@ -254,8 +253,8 @@
         return;
       }
       scenarioTextEl.textContent =
-        `You are speaking to ${CAREGIVER_NAME}, the ${CAREGIVER_ROLE} of ${CHILD_NAME}, a ${CHILD_AGE} old child, in the ${SETTING.toLowerCase()}. `
-        + `The task is ${COMMUNICATION_TYPE.toLowerCase()} regarding ${MAIN_ISSUE || "the child's condition"}.`;
+        `You are speaking to ${CAREGIVER_NAME}, the ${CAREGIVER_ROLE} of ${CHILD_NAME}, a ${CHILD_AGE} old child, in the ${SETTING.toLowerCase()}. ` +
+        `The task is ${COMMUNICATION_TYPE.toLowerCase()} regarding ${MAIN_ISSUE || "the child's condition"}.`;
     }
 
     function buildSafeReturnUrl(autoFeedback = "0") {
@@ -301,10 +300,60 @@
       transcriptEl.scrollTop = transcriptEl.scrollHeight;
     }
 
+    function getLastTranscriptEntry() {
+      if (!transcriptLines.length) return null;
+      return transcriptLines[transcriptLines.length - 1];
+    }
+
+    function sanitizeBotText(text) {
+      let cleaned = String(text || "").trim();
+      if (!cleaned) return "";
+
+      cleaned = cleaned.replace(/^bot:\s*/i, "").trim();
+      const splitPattern = /(?:\n|^)(?:student|doctor|clinician|examiner|assistant|caregiver)\s*:/i;
+      const match = cleaned.match(splitPattern);
+      if (match && match.index !== undefined && match.index > 0) {
+        cleaned = cleaned.slice(0, match.index).trim();
+      }
+
+      return cleaned;
+    }
+
+    function shouldSuppressBotLine(botText) {
+      const cleaned = sanitizeBotText(botText);
+      if (!cleaned) return true;
+
+      const normalized = normalizeText(cleaned);
+      const lastEntry = getLastTranscriptEntry();
+
+      if (!lastEntry) return false;
+      if (lastEntry.speaker !== "Bot") return false;
+      if (normalizeText(lastEntry.text) === normalizeText(OPENING_LINE)) return false;
+      if (normalized === normalizeText(FINAL_FEEDBACK_QUESTION)) return false;
+      if (normalized.includes("session ended due to inactivity")) return false;
+      if (normalized.includes("session ended because the 30 minute limit was reached")) return false;
+      if (normalized.includes("you have five minutes left")) return false;
+
+      return true;
+    }
+
     function addTranscriptLine(speaker, text) {
       if (!text) return;
-      transcriptLines.push({ speaker, text });
-      appendTranscriptLineToDOM(speaker, text);
+
+      let finalText = String(text).trim();
+      if (!finalText) return;
+
+      if (speaker === "Bot") {
+        finalText = sanitizeBotText(finalText);
+        if (!finalText) return;
+        if (shouldSuppressBotLine(finalText)) {
+          console.warn("Suppressed consecutive bot line:", finalText);
+          return;
+        }
+      }
+
+      transcriptLines.push({ speaker, text: finalText });
+      appendTranscriptLineToDOM(speaker, finalText);
     }
 
     async function saveTranscriptToServer() {
@@ -579,7 +628,9 @@
               const transcriptPart = item.content.find(c => c.transcript);
               if (!transcriptPart || !transcriptPart.transcript) return;
 
-              const botText = transcriptPart.transcript;
+              const botText = sanitizeBotText(transcriptPart.transcript);
+              if (!botText) return;
+
               const normalizedBotText = normalizeText(botText);
 
               if (normalizedBotText === normalizedOpeningLine) {
